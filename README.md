@@ -28,6 +28,15 @@
 
 ## 安装
 
+### 下载安装包
+
+[下载最新版 XShare](https://github.com/elonnzhang/XShare/releases/latest)
+
+1. 下载并解压 `XShare-v*.zip`。
+2. 打开 `chrome://extensions/` 并进入开发者模式。
+3. 点击 **加载已解压的扩展程序**，选择解压后的目录。
+4. 打开或刷新 `https://x.com/`。
+
 ### 从源码安装
 
 1. 打开 Chrome，进入 `chrome://extensions/`。
@@ -65,6 +74,9 @@
 ```bash
 # 重新生成 dist/（只包含扩展运行所需文件）
 node scripts/build.mjs
+
+# 生成可上传到 GitHub Releases 的安装包与 SHA-256 校验文件
+node scripts/package.mjs
 
 # 检查 JS、JSON、多语言文案、Manifest 引用和 dist/ 是否同步
 node scripts/check.mjs
