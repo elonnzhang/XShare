@@ -1,0 +1,51 @@
+.xshare-menu-item {
+  align-items: center;
+  box-sizing: border-box;
+  color: var(--xshare-menu-text, #0f1419);
+  cursor: pointer;
+  display: flex;
+  min-height: 52px;
+  outline: none;
+  transition: background-color 120ms ease;
+  width: 100%;
+}
+
+.xshare-menu-item:hover,
+.xshare-menu-item:focus-visible {
+  background: var(--xshare-menu-hover, rgba(15, 20, 25, 0.08));
+}
+
+.xshare-menu-item--dark {
+  --xshare-menu-text: #e7e9ea;
+  --xshare-menu-hover: rgba(231, 233, 234, 0.1);
+}
+
+.xshare-menu-item__icon {
+  align-items: center;
+  display: flex;
+  flex: 0 0 48px;
+  justify-content: center;
+}
+
+.xshare-menu-item__icon svg {
+  fill: currentColor;
+  height: 23px;
+  width: 23px;
+}
+
+.xshare-menu-item__body {
+  align-items: baseline;
+  display: flex;
+  flex: 1 1 auto;
+  gap: 8px;
+  min-width: 0;
+  padding-right: 22px;
+}
+
+.xshare-menu-item__label {
+  font-family: TwitterChirp, -apple-system, "system-ui", "Segoe UI", "PingFang SC", sans-serif;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 20px;
+  white-space: nowrap;
+}

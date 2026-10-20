@@ -1,0 +1,8 @@
+{
+  "extName": {
+    "message": "XShare - 將 X 貼文儲存為圖片"
+  },
+  "extDescription": {
+    "message": "在 X 的分享選單中加入「將貼文儲存為圖片」，產生帶有 X 浮水印的高畫質 PNG。"
+  }
+}

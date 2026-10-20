@@ -1,0 +1,8 @@
+{
+  "extName": {
+    "message": "XShare - X のポストを画像として保存"
+  },
+  "extDescription": {
+    "message": "X の共有メニューに「ポストを画像として保存」を追加し、X の透かし入り高解像度 PNG を作成します。"
+  }
+}

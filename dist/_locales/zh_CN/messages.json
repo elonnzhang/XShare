@@ -1,0 +1,8 @@
+{
+  "extName": {
+    "message": "XShare - 保存 X 帖子为图片"
+  },
+  "extDescription": {
+    "message": "在 X 的分享菜单中加入“保存帖子为图片”，生成带 X 水印的高清 PNG。"
+  }
+}

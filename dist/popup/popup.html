@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>XShare</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="header">
+        <svg class="logo" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.638 7.584H.474l8.6-9.83L0 1.154h7.594l5.243 6.932ZM17.61 20.644h2.039L6.486 3.24H4.298Z"></path>
+        </svg>
+        <h1>XShare</h1>
+      </header>
+
+      <section class="settings" aria-labelledby="settings-title">
+        <h2 id="settings-title" data-i18n="settingsTitle">Export settings</h2>
+
+        <div class="setting">
+          <div class="setting__copy">
+            <strong data-i18n="cardTheme">Card theme</strong>
+            <span data-i18n="themeHint">Follow the page or fix light/dark</span>
+          </div>
+          <div class="segmented" role="group" aria-label="Card theme" data-i18n-aria-label="cardTheme">
+            <button type="button" data-theme="auto" data-i18n="themeAuto">Auto</button>
+            <button type="button" data-theme="light" data-i18n="themeLight">Light</button>
+            <button type="button" data-theme="dark" data-i18n="themeDark">Dark</button>
+          </div>
+        </div>
+
+        <label class="setting setting--toggle">
+          <div class="setting__copy">
+            <strong data-i18n="watermark">X watermark</strong>
+            <span data-i18n="watermarkPopupHint">Keep Post on 𝕏 · XShare · share time</span>
+          </div>
+          <input id="watermark" type="checkbox" />
+          <span class="switch" aria-hidden="true"></span>
+        </label>
+
+        <label class="setting setting--toggle">
+          <div class="setting__copy">
+            <strong data-i18n="metrics">Engagement</strong>
+            <span data-i18n="metricsHint">Replies, reposts, likes and views</span>
+          </div>
+          <input id="show-metrics" type="checkbox" />
+          <span class="switch" aria-hidden="true"></span>
+        </label>
+      </section>
+
+      <p class="hint" data-i18n="popupHint">Choose “Save post as image” from a post's share menu. Everything is drawn locally.</p>
+
+      <footer>
+        <button id="open-x" type="button" data-i18n="openX">Open X</button>
+      </footer>
+    </main>
+    <script src="../shared/i18n.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

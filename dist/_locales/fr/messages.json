@@ -1,0 +1,8 @@
+{
+  "extName": {
+    "message": "XShare - Enregistrer les posts X en image"
+  },
+  "extDescription": {
+    "message": "Ajoute « Enregistrer le post en image » au menu Partager de X et crée un PNG net avec un filigrane X."
+  }
+}

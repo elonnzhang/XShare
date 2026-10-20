@@ -1,0 +1,8 @@
+{
+  "extName": {
+    "message": "XShare - Salve posts do X como imagem"
+  },
+  "extDescription": {
+    "message": "Adiciona “Salvar post como imagem” ao menu Compartilhar do X e cria um PNG nítido com marca d'água do X."
+  }
+}

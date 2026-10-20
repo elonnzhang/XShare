@@ -1,0 +1,8 @@
+{
+  "extName": {
+    "message": "XShare - Save X posts as images"
+  },
+  "extDescription": {
+    "message": "Adds “Save post as image” to X's share menu and creates a crisp PNG with an X watermark."
+  }
+}
