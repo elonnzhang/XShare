@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const CONTENT_VERSION = "1.3.0";
+  const CONTENT_VERSION = "1.3.1";
   if (window.__xshareLoaded === CONTENT_VERSION) return;
   window.__xshareLoaded = CONTENT_VERSION;
 
@@ -131,7 +131,11 @@
   }
 
   function readMetrics(article) {
-    const group = article.querySelector('[role="group"][aria-label*="replies"]');
+    // The group's aria-label is localized ("3 replies, …" / "3 回复、…"), so
+    // identify the classic action bar by its language-neutral test ids.
+    const group = [...article.querySelectorAll('[role="group"]')].find((candidate) =>
+      candidate.querySelector('[data-testid="reply"], [data-testid="like"]')
+    );
     const rawLabel = group?.getAttribute("aria-label") || "";
 
     // X began rolling out its 2026 React UI to a subset of accounts. It keeps
