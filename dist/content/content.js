@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const CONTENT_VERSION = "1.5.0";
+  const CONTENT_VERSION = "1.5.1";
   if (window.__xshareLoaded === CONTENT_VERSION) return;
   window.__xshareLoaded = CONTENT_VERSION;
 
@@ -281,6 +281,45 @@
     return normalizeUrl(match?.[1] || "");
   }
 
+  function isVideoPlaceholder(url) {
+    return /\/videoplayback\b|^blob:|^data:video/.test(String(url));
+  }
+
+  // Draw a playing video's current frame to a canvas and return the PNG. This
+  // stays in memory for the export; nothing is uploaded or saved.
+  function captureVideoFrame(video) {
+    try {
+      if (!video.videoWidth || !video.videoHeight || video.readyState < 2) return null;
+      const canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      canvas.getContext("2d")?.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const dataUrl = canvas.toDataURL("image/png");
+      return dataUrl ? { src: dataUrl, width: canvas.width, height: canvas.height } : null;
+    } catch {
+      // Cross-origin frames taint the canvas and throw; fall back to no image.
+      return null;
+    }
+  }
+
+  // Duration badge, read from the player's time display (e.g. "0:12").
+  function readVideoDuration(player, video) {
+    // Live/streamed sources report 0 or Infinity; a "0:00" badge would be wrong.
+    if (Number.isFinite(video?.duration) && video.duration >= 1) return formatDuration(video.duration);
+    const time = [...player.querySelectorAll("span, div")].find((node) =>
+      /^\d{1,2}:\d{2}(?::\d{2})?$/.test(node.textContent.trim()) && node.textContent.trim() !== "0:00"
+    );
+    return time ? time.textContent.trim() : "";
+  }
+
+  function formatDuration(seconds) {
+    const total = Math.round(seconds);
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    const pad = (value) => String(value).padStart(2, "0");
+    return hours ? `${hours}:${pad(minutes)}:${pad(total % 60)}` : `${minutes}:${pad(total % 60)}`;
+  }
+
   function readMedia(article) {
     const tweetText =
       article.querySelector('[data-testid="tweetText"]') ||
@@ -323,16 +362,31 @@
     const videos = article.querySelectorAll('[data-testid="videoPlayer"], [data-testid="videoComponent"]');
     for (const player of videos) {
       if (isInsideQuote(player)) continue;
-      const poster = player.querySelector('video[poster], img[src*="amplify_video_thumb"]');
-      const src = poster?.currentSrc || poster?.src || poster?.poster;
-      if (!src || seen.has(src)) continue;
-      seen.add(src);
+      const video = player.querySelector("video");
+      // X points a playing video's poster at a placeholder, so prefer the
+      // player's own thumbnail image and the video's poster attribute.
+      const thumb =
+        player.querySelector('img[src*="amplify_video_thumb"]') ||
+        player.querySelector('img[src*="tweet_video_thumb"]') ||
+        player.querySelector('img[src]');
+      const posterUrl = video?.poster || "";
+      const thumbUrl = thumb?.currentSrc || thumb?.src || "";
+      const src = [posterUrl, thumbUrl].find((url) => url && !isVideoPlaceholder(url)) || "";
+      // A frame captured from the playing video, when the poster is gone.
+      const frame = !src && video ? captureVideoFrame(video) : null;
+      if (!src && !frame) continue;
+      if (src && seen.has(src)) continue;
+      if (src) seen.add(src);
+      const width = frame?.width || thumb?.naturalWidth || video?.videoWidth || 16;
+      const height = frame?.height || thumb?.naturalHeight || video?.videoHeight || 9;
       cards.push({
         type: "video",
-        src: normalizeUrl(src),
+        src: src ? normalizeUrl(src) : "",
+        frame,
         alt: "Video thumbnail",
-        width: poster?.naturalWidth || 16,
-        height: poster?.naturalHeight || 9
+        width,
+        height,
+        duration: readVideoDuration(player, video)
       });
     }
 
@@ -1211,7 +1265,15 @@
 
     const textTop = isDetail ? 66 : 38;
     const textHeight = textLines.length * 24;
-    const mediaBlocks = layoutMedia(images, contentWidth);
+    // Detail media spans the card, like the quote box; timeline media stays in
+    // the body column beside the avatar.
+    const mediaWidth = isDetail ? cardWidthPx - CARD_PADDING * 2 : contentWidth;
+    const mediaBlocks = layoutMedia(post, images, mediaWidth);
+    if (isDetail) {
+      // Keep the grid's column offsets and shift the whole block to the card edge.
+      const shift = CARD_PADDING - CONTENT_LEFT;
+      for (const block of mediaBlocks) block.x += shift;
+    }
     const quoteWidth = isDetail ? cardWidthPx - CARD_PADDING * 2 : contentWidth;
     const quoteBlock = post.quoted
       ? layoutQuote(context, post.quoted, quoteWidth, images, !isDetail, cardWidthPx)
@@ -1255,7 +1317,7 @@
     paintAvatar(context, images.avatar, post, colors);
     paintAuthor(context, nameRow, colors);
     if (isDetail) {
-      paintMore(context, colors);
+      paintMore(context, colors, cardWidthPx);
     }
 
     context.fillStyle = colors.text;
@@ -1421,7 +1483,7 @@
     }
   }
 
-  function paintMore(context, colors) {
+  function paintMore(context, colors, cardWidthPx) {
     context.save();
     context.fillStyle = colors.muted;
     context.globalAlpha = 0.92;
@@ -1454,7 +1516,7 @@
   }
 
   function paintMedia(context, block, images, colors, useDark) {
-    const image = images.media.get(block.src);
+    const image = images.media.get(mediaKey(block));
     const radius = 16;
     context.save();
     roundedRect(context, block.x, block.y, block.width, block.height, radius);
@@ -1480,6 +1542,26 @@
       context.lineTo(block.x + block.width / 2 - 7, block.y + block.height / 2 + 11);
       context.closePath();
       context.fill();
+      context.restore();
+    }
+
+    // Duration badge, bottom-right, like X's player.
+    if (block.type === "video" && block.duration) {
+      context.save();
+      context.font = `700 13px ${fontFamily()}`;
+      const label = block.duration;
+      const textWidth = context.measureText(label).width;
+      const padX = 7;
+      const boxWidth = textWidth + padX * 2;
+      const boxHeight = 22;
+      const boxX = block.x + block.width - boxWidth - 10;
+      const boxY = block.y + block.height - boxHeight - 10;
+      roundedRect(context, boxX, boxY, boxWidth, boxHeight, 5);
+      context.fillStyle = "rgba(0, 0, 0, 0.75)";
+      context.fill();
+      context.fillStyle = "#ffffff";
+      context.textBaseline = "middle";
+      context.fillText(label, boxX + padX, boxY + boxHeight / 2 + 0.5);
       context.restore();
     }
 
@@ -1677,20 +1759,25 @@
     context.restore();
   }
 
-  function layoutMedia(images, width) {
+  function layoutMedia(post, images, width) {
     const blocks = [];
     let y = 0;
-    const items = [...images.media.values()];
+    // Keep the read-time metadata (kind, duration, captured frame) with the
+    // block; the loaded images are only used for ratios and paint lookup.
+    const items = post.media.filter((item) => images.media.has(mediaKey(item)));
     const count = items.length;
     if (!count) return blocks;
 
     if (count === 1) {
-      const image = items[0];
+      const item = items[0];
+      const image = images.media.get(mediaKey(item));
       const ratio = image.naturalWidth / Math.max(1, image.naturalHeight);
       const height = Math.max(140, Math.min(360, width / Math.max(ratio, 0.5)));
       blocks.push({
-        type: postMediaType(images, image.src),
-        src: image.src,
+        type: item.type,
+        src: item.src,
+        frame: item.frame,
+        duration: item.duration,
         x: CONTENT_LEFT,
         y,
         width,
@@ -1702,12 +1789,14 @@
       const rows = Math.ceil(count / columns);
       const cellWidth = (width - gap) / columns;
       const cellHeight = Math.min(180, Math.max(120, cellWidth * 0.62));
-      items.forEach((image, index) => {
+      items.forEach((item, index) => {
         const column = index % columns;
         const row = Math.floor(index / columns);
         blocks.push({
-          type: postMediaType(images, image.src),
-          src: image.src,
+          type: item.type,
+          src: item.src,
+          frame: item.frame,
+          duration: item.duration,
           x: CONTENT_LEFT + column * (cellWidth + gap),
           y: row * (cellHeight + gap),
           width: cellWidth,
@@ -1720,10 +1809,6 @@
     }
 
     return blocks;
-  }
-
-  function postMediaType(images, src) {
-    return images.types.get(src) || "photo";
   }
 
   function layoutQuote(context, quote, width, images, filled = false) {
@@ -1845,15 +1930,20 @@
     });
   }
 
+  // A captured frame has no URL; key it by its data URL so layout, loading and
+  // painting all resolve to the same image.
+  function mediaKey(item) {
+    return item.src || item.frame?.src || "";
+  }
+
   async function loadPostImages(post) {
     const media = new Map();
-    const types = new Map();
     const avatarPromise = loadImage(post.avatar);
     const quoteAvatarPromise = post.quoted?.avatar ? loadImage(post.quoted.avatar) : Promise.resolve(null);
     const mediaPromises = post.media.map(async (item) => {
-      types.set(item.src, item.type);
-      const image = await loadImage(item.src);
-      if (image) media.set(item.src, image);
+      const key = mediaKey(item);
+      const image = await loadImage(item.frame?.src || item.src);
+      if (image) media.set(key, image);
     });
     const quotePromise = post.quoted?.image ? loadImage(post.quoted.image) : Promise.resolve(null);
     const [avatar, quoteImage, quoteAvatar, ...rest] = await Promise.all([
@@ -1866,7 +1956,7 @@
     if (quoteImage && post.quoted) {
       post.quoted.imageElement = quoteImage;
     }
-    return { avatar, media, types, quoteImage, quoteAvatar };
+    return { avatar, media, quoteImage, quoteAvatar };
   }
 
   function registerMessageBridge() {
