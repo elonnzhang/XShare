@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const CONTENT_VERSION = "1.4.0";
+  const CONTENT_VERSION = "1.4.1";
   if (window.__xshareLoaded === CONTENT_VERSION) return;
   window.__xshareLoaded = CONTENT_VERSION;
 
@@ -108,6 +108,10 @@
   let scanFrame = 0;
   let toastTimer = 0;
   let lastFocusedElement = null;
+  // Page scroll position when the dialog opened, restored on close.
+  let savedScroll = null;
+  // Page scroll position at the last share-button click.
+  let shareScroll = null;
   let shareClickedAt = 0;
 
   const pause = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -669,6 +673,10 @@
     item.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
+      // Use the position from the share click unless it's stale.
+      const fresh = shareScroll && Date.now() - shareScroll.at < 10000;
+      const scroll = fresh ? shareScroll : { x: window.scrollX, y: window.scrollY };
+      shareScroll = null;
       const article = activeArticle || findArticleForShareButton(activeShareButton);
       if (!article) {
         showToast(t("postNotFound"), "error");
@@ -677,7 +685,7 @@
       document.dispatchEvent(
         new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })
       );
-      openPreview(article);
+      openPreview(article, scroll);
     });
 
     item.addEventListener("keydown", (event) => {
@@ -747,6 +755,7 @@
       const shareButton = findShareButton(event.target);
       if (!shareButton) return;
       shareClickedAt = Date.now();
+      shareScroll = { x: window.scrollX, y: window.scrollY, at: Date.now() };
       activeShareButton = shareButton;
       activeArticle = shareButton.closest("article");
       scheduleScan();
@@ -757,8 +766,13 @@
   document.addEventListener(
     "keydown",
     (event) => {
-      // An open font list handles Escape itself and only closes the list.
-      if (event.key === "Escape" && overlay && !fontCombo?.isOpen()) {
+      // An open font list handles Escape itself and only closes the list. The
+      // Escape we send to close X's share menu must not reach a closed dialog.
+      if (
+        event.key === "Escape" &&
+        overlay?.classList.contains("xshare-open") &&
+        !fontCombo?.isOpen()
+      ) {
         closeOverlay();
       }
     },
@@ -977,7 +991,7 @@
     throw new Error(response?.error || "No response from the service worker");
   }
 
-  async function openPreview(article) {
+  async function openPreview(article, scroll) {
     lastFocusedElement = document.activeElement;
     createOverlay();
     // Never let Download/Copy export the previous post while this one renders.
@@ -990,11 +1004,14 @@
     updateFontControls();
     overlay.dataset.xsTheme = detectPageTheme();
     overlay.classList.add("xshare-open");
-    document.documentElement.classList.add("xshare-lock-scroll");
-    overlay.querySelector('[data-xshare-action="close"]').focus();
+    lockPageScroll(scroll);
+    overlay.querySelector('[data-xshare-action="close"]').focus({ preventScroll: true });
 
     activeArticle = article;
     await expandLongPost(article);
+    // Expanding "Show more" and X's own menu/focus handling can scroll the
+    // timeline; put it back where the reader was.
+    restorePageScroll();
     const post = readPost(article);
 
     try {
@@ -1043,10 +1060,37 @@
 
   function closeOverlay() {
     renderToken += 1;
+    const wasOpen = overlay?.classList.contains("xshare-open");
     overlay?.classList.remove("xshare-open");
-    document.documentElement.classList.remove("xshare-lock-scroll");
     rendered = null;
-    lastFocusedElement?.focus?.();
+    if (!wasOpen) return;
+    document.documentElement.classList.remove("xshare-lock-scroll");
+    // focus() would scroll the last focused element into view; keep the
+    // reader's position instead.
+    if (lastFocusedElement?.isConnected) lastFocusedElement.focus?.({ preventScroll: true });
+    restorePageScroll();
+    // X re-measures its virtual timeline after the scrollbar comes back.
+    requestAnimationFrame(restorePageScroll);
+    const restoring = savedScroll;
+    setTimeout(() => {
+      restorePageScroll();
+      // Don't drop the position of a dialog reopened in the meantime.
+      if (savedScroll === restoring) savedScroll = null;
+    }, 120);
+  }
+
+  function lockPageScroll(scroll) {
+    if (!document.documentElement.classList.contains("xshare-lock-scroll")) {
+      savedScroll = scroll || { x: window.scrollX, y: window.scrollY };
+    }
+    document.documentElement.classList.add("xshare-lock-scroll");
+    restorePageScroll();
+  }
+
+  function restorePageScroll() {
+    if (!savedScroll) return;
+    const { x, y } = savedScroll;
+    if (window.scrollX !== x || window.scrollY !== y) window.scrollTo(x, y);
   }
 
   function showToast(message, tone = "success") {
@@ -1928,9 +1972,12 @@
       display: flex;
       animation: xshare-fade 180ms ease both;
     }
-    html.xshare-lock-scroll,
-    html.xshare-lock-scroll body {
+    html.xshare-lock-scroll {
       overflow: hidden !important;
+      scrollbar-gutter: stable;
+    }
+    html.xshare-lock-scroll body {
+      overflow: visible !important;
     }
     @keyframes xshare-fade {
       from { opacity: 0; }
