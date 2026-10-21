@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const CONTENT_VERSION = "1.3.1";
+  const CONTENT_VERSION = "1.3.2";
   if (window.__xshareLoaded === CONTENT_VERSION) return;
   window.__xshareLoaded = CONTENT_VERSION;
 
@@ -863,7 +863,22 @@
 
   function setSetting(key, value) {
     settings[key] = value;
-    Promise.resolve(chrome.storage.sync.set({ [key]: value })).catch(() => {});
+    if (!extensionAlive()) return;
+    try {
+      Promise.resolve(chrome.storage.sync.set({ [key]: value })).catch(() => {});
+    } catch {
+      // The extension was reloaded; keep the setting for this page only.
+    }
+  }
+
+  // After the extension is reloaded or updated, scripts already injected into
+  // open tabs are orphaned and every chrome.* call throws synchronously.
+  function extensionAlive() {
+    try {
+      return Boolean(chrome.runtime?.id);
+    } catch {
+      return false;
+    }
   }
 
   function updateThemeControls() {
@@ -957,11 +972,21 @@
       .replace(/[^a-z0-9_-]+/gi, "")
       .slice(0, 30) || "post";
     const filename = `xshare-${safeHandle}-${rendered.post.statusId || Date.now()}.png`;
-    const response = await chrome.runtime.sendMessage({
-      type: "XSHARE_DOWNLOAD",
-      dataUrl: rendered.dataUrl,
-      filename
-    });
+    if (!extensionAlive()) {
+      showToast(t("extensionReloaded"), "error");
+      return;
+    }
+    let response;
+    try {
+      response = await chrome.runtime.sendMessage({
+        type: "XSHARE_DOWNLOAD",
+        dataUrl: rendered.dataUrl,
+        filename
+      });
+    } catch {
+      showToast(t(extensionAlive() ? "downloadFailed" : "extensionReloaded"), "error");
+      return;
+    }
     if (!response?.ok) {
       showToast(response?.error || t("downloadFailed"), "error");
       return;
@@ -1560,19 +1585,39 @@
         lines.push("");
         continue;
       }
+      // Break at word boundaries; only split inside a token wider than the line.
       let current = "";
-      for (const char of [...paragraph]) {
-        const candidate = current + char;
-        if (current && context.measureText(candidate).width > maxWidth) {
-          lines.push(current);
-          current = char;
-        } else {
+      for (const token of segmentWords(paragraph)) {
+        const candidate = current + token;
+        if (context.measureText(candidate.trimEnd()).width <= maxWidth) {
           current = candidate;
+          continue;
+        }
+        if (current) lines.push(current.trimEnd());
+        current = token.trimStart();
+        if (context.measureText(current.trimEnd()).width > maxWidth) {
+          let chunk = "";
+          for (const char of [...current]) {
+            if (chunk && context.measureText(chunk + char).width > maxWidth) {
+              lines.push(chunk);
+              chunk = char;
+            } else {
+              chunk += char;
+            }
+          }
+          current = chunk;
         }
       }
-      if (current) lines.push(current);
+      if (current) lines.push(current.trimEnd());
     }
     return lines;
+  }
+
+  function segmentWords(text) {
+    // CJK characters break anywhere; other runs break only at whitespace.
+    const cjk = "\\u3000-\\u9fff\\uac00-\\ud7af\\uff00-\\uffef";
+    const pattern = new RegExp(`[${cjk}]\\s*|[^\\s${cjk}]+\\s*|\\s+`, "g");
+    return text.match(pattern) || [];
   }
 
   function trimText(context, text, maxWidth) {
@@ -1674,14 +1719,23 @@
   // Remember X's language so the toolbar popup can match it.
   function watchPageLocale() {
     let lastLocale = "";
+    const observer = new MutationObserver(() => publish());
     const publish = () => {
+      if (!extensionAlive()) {
+        observer.disconnect();
+        return;
+      }
       const locale = currentLocale();
       if (locale === lastLocale) return;
       lastLocale = locale;
-      Promise.resolve(chrome.storage.local.set({ pageLocale: locale })).catch(() => {});
+      try {
+        Promise.resolve(chrome.storage.local.set({ pageLocale: locale })).catch(() => {});
+      } catch {
+        observer.disconnect();
+      }
     };
     publish();
-    new MutationObserver(publish).observe(document.documentElement, {
+    observer.observe(document.documentElement, {
       attributes: true,
       attributeFilter: ["lang"]
     });
