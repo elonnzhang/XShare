@@ -107,6 +107,24 @@ for (const localeDir of readdirSync(join(root, "_locales"))) {
   }
 }
 
+// Settings defaults must stay in sync across the service worker, the content
+// script and the popup, or the font picker and toggles drift apart.
+const defaultsOf = (file) => {
+  const source = readFileSync(join(root, file), "utf8");
+  const match = source.match(/DEFAULT_SETTINGS\s*=\s*\{([\s\S]*?)\};/) ||
+    source.match(/DEFAULT[A-Z_]*\s*=\s*\{([\s\S]*?)\};/);
+  if (!match) return null;
+  return [...match[1].matchAll(/(\w+)\s*:/g)].map((entry) => entry[1]).sort().join(",");
+};
+const defaultSources = ["background.js", "content/content.js", "popup/popup.js"];
+const defaultShapes = defaultSources.map((file) => [file, defaultsOf(file)]);
+for (const [file, shape] of defaultShapes) {
+  if (!shape) fail(`${file}: no default settings object found`);
+  else if (shape !== defaultShapes[0][1]) {
+    fail(`${file}: default settings keys differ from ${defaultShapes[0][0]}`);
+  }
+}
+
 const buildCheck = spawnSync(
   process.execPath,
   [join(root, "scripts/build.mjs"), "--check"],

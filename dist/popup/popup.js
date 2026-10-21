@@ -1,14 +1,28 @@
 const DEFAULTS = {
   theme: "auto",
   watermark: true,
-  showMetrics: true
+  showMetrics: true,
+  // Font names in fallback order; X's own stack always comes last.
+  fontFamily: []
 };
 const I18N = globalThis.XShareI18n;
 
 const themeButtons = [...document.querySelectorAll("[data-theme]")];
 const watermark = document.querySelector("#watermark");
 const showMetrics = document.querySelector("#show-metrics");
+const fontCombo = globalThis.XShareFontCombobox.mount(document.querySelector("#font-field"), {
+  defaultLabel: "Default",
+  onChange(names) {
+    currentFonts = names;
+    save({ fontFamily: names });
+  }
+});
 const openX = document.querySelector("#open-x");
+
+let locale = I18N.FALLBACK;
+let currentFonts = [];
+// Installed font family names from the service worker.
+let localFonts = null;
 
 function paintTheme(theme) {
   for (const button of themeButtons) {
@@ -41,7 +55,8 @@ async function detectLocale() {
   return I18N.resolveLocale(navigator.language);
 }
 
-function localize(locale) {
+function localize(current) {
+  locale = current;
   document.documentElement.lang = locale;
   for (const node of document.querySelectorAll("[data-i18n]")) {
     node.textContent = I18N.translate(locale, node.dataset.i18n);
@@ -49,14 +64,43 @@ function localize(locale) {
   for (const node of document.querySelectorAll("[data-i18n-aria-label]")) {
     node.setAttribute("aria-label", I18N.translate(locale, node.dataset.i18nAriaLabel));
   }
+  for (const node of document.querySelectorAll("[data-i18n-placeholder]")) {
+    node.placeholder = I18N.translate(locale, node.dataset.i18nPlaceholder);
+  }
+  fontCombo.setLabels({
+    defaultLabel: I18N.translate(locale, "fontDefault"),
+    ariaLabel: I18N.translate(locale, "font"),
+    placeholder: I18N.translate(locale, "fontSearch")
+  });
+}
+
+// Installed font family names only — chrome.fontSettings exposes the OS font
+// list, not any page or browsing data.
+async function readLocalFonts() {
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "XSHARE_FONTS" });
+    if (!response?.ok || !Array.isArray(response.localFonts)) {
+      console.warn("[XShare] font list:", response?.error || "no response");
+      return null;
+    }
+    return response.localFonts;
+  } catch (error) {
+    console.warn("[XShare]", error);
+    return null;
+  }
 }
 
 async function init() {
   localize(await detectLocale());
   const settings = { ...DEFAULTS, ...(await chrome.storage.sync.get(DEFAULTS)) };
   paintTheme(settings.theme);
+  // Set the toggles before awaiting the font list, which can take a moment.
   watermark.checked = Boolean(settings.watermark);
   showMetrics.checked = Boolean(settings.showMetrics);
+  currentFonts = globalThis.XShareFontCombobox.normalizeFonts(settings.fontFamily);
+  fontCombo.setValue(currentFonts);
+  localFonts = (await readLocalFonts()) || [];
+  fontCombo.setFonts(localFonts);
 }
 
 for (const button of themeButtons) {

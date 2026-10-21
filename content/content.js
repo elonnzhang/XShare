@@ -1,14 +1,16 @@
 (() => {
   "use strict";
 
-  const CONTENT_VERSION = "1.3.2";
+  const CONTENT_VERSION = "1.4.0";
   if (window.__xshareLoaded === CONTENT_VERSION) return;
   window.__xshareLoaded = CONTENT_VERSION;
 
   const DEFAULT_SETTINGS = {
     theme: "auto",
     watermark: true,
-    showMetrics: true
+    showMetrics: true,
+    // Font names in fallback order; X's own stack always comes last.
+    fontFamily: []
   };
   const ROOT_ID = "xshare-overlay-root";
   const I18N = globalThis.XShareI18n;
@@ -38,8 +40,20 @@
   const AVATAR_SIZE = 40;
   const AVATAR_GAP = 4;
   const CONTENT_LEFT = CARD_PADDING + AVATAR_SIZE + AVATAR_GAP;
-  const FONT_FAMILY =
+  const DEFAULT_FONT_FAMILY =
     'TwitterChirp, -apple-system, "system-ui", "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
+  // The user picks local fonts for the card in fallback order; X's stack stays
+  // as the final fallback.
+  function fontFamily() {
+    const names = globalThis.XShareFontCombobox.normalizeFonts(settings.fontFamily);
+    // Always quote: an unquoted name like "04b_03" is invalid CSS, and canvas
+    // silently ignores invalid font values.
+    const quoted = names.map(
+      (name) => `"${name.replace(/[\\"]/g, "\\$&").replace(/[\n\r\f]/g, " ")}"`
+    );
+    return [...quoted, DEFAULT_FONT_FAMILY].join(", ");
+  }
+
   const ACCENT = "#1d9bf0";
   const COLORS = {
     light: {
@@ -83,6 +97,13 @@
   let overlay = null;
   let rendered = null;
   let settings = { ...DEFAULT_SETTINGS };
+  let fontList = null;
+  let fontCombo = null;
+  // Last value this tab wrote per setting key, to recognise our own echoes.
+  const pendingWrites = new Map();
+  const writeTimers = new Map();
+  // Only the newest render may update the preview.
+  let renderToken = 0;
   let menuObserver = null;
   let scanFrame = 0;
   let toastTimer = 0;
@@ -736,7 +757,8 @@
   document.addEventListener(
     "keydown",
     (event) => {
-      if (event.key === "Escape" && overlay) {
+      // An open font list handles Escape itself and only closes the list.
+      if (event.key === "Escape" && overlay && !fontCombo?.isOpen()) {
         closeOverlay();
       }
     },
@@ -808,6 +830,13 @@
               <input type="checkbox" data-xshare-setting="showMetrics" />
               <i aria-hidden="true"></i>
             </label>
+            <div class="xshare-font-row">
+              <span>
+                <strong>${h("font")}</strong>
+                <small>${h("fontHint")}</small>
+              </span>
+              <div class="xshare-font-field" data-xshare-font></div>
+            </div>
             <div class="xshare-divider"></div>
             <p class="xshare-note">
               ${h("localNote")}
@@ -831,6 +860,15 @@
     document.documentElement.appendChild(overlay);
     overlay.addEventListener("click", handleOverlayClick);
     overlay.addEventListener("change", handleOverlayChange);
+    fontCombo = globalThis.XShareFontCombobox.mount(overlay.querySelector("[data-xshare-font]"), {
+      defaultLabel: t("fontDefault"),
+      ariaLabel: t("font"),
+      onChange(names) {
+        setSetting("fontFamily", names);
+        renderCurrent();
+      }
+    });
+    fontCombo.setLabels({ placeholder: t("fontSearch") });
     return overlay;
   }
 
@@ -861,14 +899,29 @@
     renderCurrent();
   }
 
+  // Writes are debounced per key: picking several fonts in a row would
+  // otherwise hit storage.sync's write quota, and late echoes of earlier
+  // writes would roll the selection back (see watchSettings).
   function setSetting(key, value) {
     settings[key] = value;
-    if (!extensionAlive()) return;
-    try {
-      Promise.resolve(chrome.storage.sync.set({ [key]: value })).catch(() => {});
-    } catch {
-      // The extension was reloaded; keep the setting for this page only.
-    }
+    pendingWrites.set(key, JSON.stringify(value));
+    clearTimeout(writeTimers.get(key));
+    writeTimers.set(
+      key,
+      setTimeout(() => {
+        writeTimers.delete(key);
+        if (!extensionAlive()) return;
+        try {
+          Promise.resolve(chrome.storage.sync.set({ [key]: settings[key] })).catch((error) => {
+            // No echo will come; stop ignoring changes from other tabs.
+            pendingWrites.delete(key);
+            console.warn("[XShare]", error);
+          });
+        } catch {
+          // The extension was reloaded; keep the setting for this page only.
+        }
+      }, 400)
+    );
   }
 
   // After the extension is reloaded or updated, scripts already injected into
@@ -891,13 +944,50 @@
     if (metrics) metrics.checked = Boolean(settings.showMetrics);
   }
 
+  // Load the installed font names once per page; the saved font stays
+  // selectable even before the list arrives.
+  async function updateFontControls() {
+    if (!fontCombo) return;
+    const combo = fontCombo;
+    combo.setValue(settings.fontFamily);
+    // The overlay is rebuilt when X's language changes, so hand the cached
+    // list to whichever combobox is current.
+    if (fontList) {
+      combo.setFonts(fontList);
+      return;
+    }
+    fontList = [];
+    try {
+      fontList = await loadLocalFonts();
+    } catch (error) {
+      console.warn("[XShare]", error);
+      fontList = null; // Retry next time the dialog opens.
+    }
+    fontCombo?.setFonts(fontList || []);
+  }
+
+  // Installed font family names only. Content scripts can't call
+  // chrome.fontSettings, so the service worker reads them and caches the list.
+  async function loadLocalFonts() {
+    if (!extensionAlive()) return [];
+    const { localFonts } = await chrome.storage.local.get("localFonts");
+    if (Array.isArray(localFonts) && localFonts.length) return localFonts;
+    const response = await chrome.runtime.sendMessage({ type: "XSHARE_FONTS" });
+    if (response?.ok && Array.isArray(response.localFonts)) return response.localFonts;
+    throw new Error(response?.error || "No response from the service worker");
+  }
+
   async function openPreview(article) {
     lastFocusedElement = document.activeElement;
     createOverlay();
+    // Never let Download/Copy export the previous post while this one renders.
+    rendered = null;
+    renderToken += 1;
     overlay.querySelector(".xshare-preview-art").replaceChildren();
     overlay.querySelector(".xshare-preview-loading").hidden = false;
     overlay.querySelector("[data-xshare-size]").textContent = t("sizePending");
     updateThemeControls();
+    updateFontControls();
     overlay.dataset.xsTheme = detectPageTheme();
     overlay.classList.add("xshare-open");
     document.documentElement.classList.add("xshare-lock-scroll");
@@ -908,7 +998,10 @@
     const post = readPost(article);
 
     try {
-      rendered = await renderCard(post, settings);
+      const token = ++renderToken;
+      const result = await renderCard(post, settings);
+      if (token !== renderToken) return;
+      rendered = result;
       const image = new Image();
       image.className = "xshare-preview-image";
       image.alt = t("imageAlt", { name: post.author.name });
@@ -929,7 +1022,10 @@
     try {
       updateThemeControls();
       overlay.querySelector(".xshare-preview-loading").hidden = false;
-      rendered = await renderCard(readPost(activeArticle), settings);
+      const token = ++renderToken;
+      const result = await renderCard(readPost(activeArticle), settings);
+      if (token !== renderToken || !overlay?.classList.contains("xshare-open")) return;
+      rendered = result;
       const image = new Image();
       image.className = "xshare-preview-image";
       image.alt = t("imageAlt", { name: rendered.post.author.name });
@@ -946,6 +1042,7 @@
   }
 
   function closeOverlay() {
+    renderToken += 1;
     overlay?.classList.remove("xshare-open");
     document.documentElement.classList.remove("xshare-lock-scroll");
     rendered = null;
@@ -1025,7 +1122,7 @@
     const bodyLeft = isDetail ? CARD_PADDING : CONTENT_LEFT;
     const contentWidth = CARD_WIDTH - CARD_PADDING - bodyLeft;
     const nameRow = layoutNameRow(context, post, CARD_WIDTH - CARD_PADDING - CONTENT_LEFT, isDetail);
-    context.font = `400 17px ${FONT_FAMILY}`;
+    context.font = `400 17px ${fontFamily()}`;
     const textLines = wrapText(context, post.text || t("noText"), contentWidth);
 
     const textTop = isDetail ? 66 : 38;
@@ -1078,7 +1175,7 @@
     }
 
     context.fillStyle = colors.text;
-    context.font = `400 17px ${FONT_FAMILY}`;
+    context.font = `400 17px ${fontFamily()}`;
     let cursorY = textTop;
     for (const line of textLines) {
       if (line) context.fillText(line, bodyLeft, cursorY + 2, contentWidth);
@@ -1106,7 +1203,7 @@
 
     if (isDetail) {
       context.fillStyle = colors.muted;
-      context.font = `400 15px ${FONT_FAMILY}`;
+      context.font = `400 15px ${fontFamily()}`;
       context.fillText(post.displayDate, CARD_PADDING, dateTop);
     }
 
@@ -1161,7 +1258,7 @@
       context.fillStyle = ACCENT;
       context.fillRect(x, y, AVATAR_SIZE, AVATAR_SIZE);
       context.fillStyle = "#ffffff";
-      context.font = `700 18px ${FONT_FAMILY}`;
+      context.font = `700 18px ${fontFamily()}`;
       context.textAlign = "center";
       context.textBaseline = "middle";
       context.fillText(initials(post.author.name), x + AVATAR_SIZE / 2, y + AVATAR_SIZE / 2);
@@ -1176,7 +1273,7 @@
     const parts = [];
     let x = 0;
     const add = (type, text, options = {}) => {
-      context.font = options.font || `700 15px ${FONT_FAMILY}`;
+      context.font = options.font || `700 15px ${fontFamily()}`;
       const width =
         type === "verified" ? options.size || 18 : context.measureText(text).width;
       parts.push({ type, text, x, width, color: options.color, size: options.size });
@@ -1189,17 +1286,17 @@
       add("verified", "", { size: 17, gap: detail ? 3 : 5 });
     }
     if (detail) {
-      add("dot", "·", { font: `400 15px ${FONT_FAMILY}`, color: "muted", gap: 3 });
+      add("dot", "·", { font: `400 15px ${fontFamily()}`, color: "muted", gap: 3 });
       return { y: 12, parts, width: x, maxWidth, detail, handle: post.author.handle };
     }
     add("handle", post.author.handle, {
-      font: `400 15px ${FONT_FAMILY}`,
+      font: `400 15px ${fontFamily()}`,
       color: "muted",
       gap: 3
     });
-    add("dot", "·", { font: `400 15px ${FONT_FAMILY}`, color: "muted", gap: 3 });
+    add("dot", "·", { font: `400 15px ${fontFamily()}`, color: "muted", gap: 3 });
     add("time", relative ? post.relativeTime || post.displayDate : post.displayDate, {
-      font: `400 15px ${FONT_FAMILY}`,
+      font: `400 15px ${fontFamily()}`,
       color: "muted",
       gap: 0
     });
@@ -1209,7 +1306,7 @@
 
   function paintAuthor(context, row, colors) {
     const x = CONTENT_LEFT;
-    context.font = `700 15px ${FONT_FAMILY}`;
+    context.font = `700 15px ${fontFamily()}`;
     context.textBaseline = "top";
     for (const part of row.parts) {
       const partX = x + part.x;
@@ -1217,14 +1314,14 @@
         paintVerifiedBadge(
           context,
           partX,
-          textCenterY(context, `700 15px ${FONT_FAMILY}`, row.y) - part.size / 2,
+          textCenterY(context, `700 15px ${fontFamily()}`, row.y) - part.size / 2,
           part.size
         );
         continue;
       }
       context.fillStyle = colors[part.color] || colors.text;
       context.font =
-        part.type === "name" ? `700 15px ${FONT_FAMILY}` : `400 15px ${FONT_FAMILY}`;
+        part.type === "name" ? `700 15px ${fontFamily()}` : `400 15px ${fontFamily()}`;
       let text = part.text;
       const available = row.maxWidth - part.x;
       if (part.width > available) {
@@ -1235,7 +1332,7 @@
 
     if (row.detail) {
       context.fillStyle = colors.muted;
-      context.font = `400 15px ${FONT_FAMILY}`;
+      context.font = `400 15px ${fontFamily()}`;
       context.fillText(row.handle || "", CONTENT_LEFT, row.y + 20);
     }
   }
@@ -1244,7 +1341,7 @@
     context.save();
     context.fillStyle = colors.muted;
     context.globalAlpha = 0.92;
-    context.font = `400 15px ${FONT_FAMILY}`;
+    context.font = `400 15px ${fontFamily()}`;
     context.textAlign = "right";
     context.fillText("···", CARD_WIDTH - CARD_PADDING - 1, 10);
     context.restore();
@@ -1308,10 +1405,10 @@
       context.fillStyle = useDark ? "rgba(22, 24, 28, 0.96)" : "rgba(255, 255, 255, 0.96)";
       context.fillRect(block.x, boxY, block.width, boxHeight);
       context.fillStyle = useDark ? "#8b98a5" : "#536471";
-      context.font = `400 13px ${FONT_FAMILY}`;
+      context.font = `400 13px ${fontFamily()}`;
       context.fillText(block.domain || "", block.x + 12, boxY + 10);
       context.fillStyle = useDark ? "#e7e9ea" : "#0f1419";
-      context.font = `400 15px ${FONT_FAMILY}`;
+      context.font = `400 15px ${fontFamily()}`;
       context.fillText(trimText(context, block.title, block.width - 24), block.x + 12, boxY + 32);
     }
 
@@ -1351,20 +1448,20 @@
 
     let bylineX = avatarX + avatarSize + 8;
     context.fillStyle = colors.text;
-    context.font = `700 15px ${FONT_FAMILY}`;
+    context.font = `700 15px ${fontFamily()}`;
     context.fillText(block.author, bylineX + 4, top + 2);
     bylineX += context.measureText(block.author).width + 7;
     if (block.verified) {
       paintVerifiedBadge(
         context,
         bylineX,
-        textCenterY(context, `700 15px ${FONT_FAMILY}`, top + 2) - 17 / 2,
+        textCenterY(context, `700 15px ${fontFamily()}`, top + 2) - 17 / 2,
         17
       );
       bylineX += 17;
     }
     context.fillStyle = colors.muted;
-    context.font = `400 15px ${FONT_FAMILY}`;
+    context.font = `400 15px ${fontFamily()}`;
     const handleLabel = `${block.handle || ""}`;
     if (handleLabel) {
       context.fillText(handleLabel, bylineX, top + 2);
@@ -1381,13 +1478,13 @@
       context.fillText(replyPrefix, left + 14, y);
       const prefixWidth = context.measureText(replyPrefix).width;
       context.fillStyle = colors.muted;
-      context.font = `400 15px ${FONT_FAMILY}`;
+      context.font = `400 15px ${fontFamily()}`;
       context.fillText(block.replyTo, left + 14 + prefixWidth, y);
       y += 20;
     }
 
     context.fillStyle = colors.text;
-    context.font = `400 15px ${FONT_FAMILY}`;
+    context.font = `400 15px ${fontFamily()}`;
     for (const line of block.lines) {
       context.fillText(line, left, y, block.width - 26);
       y += 20;
@@ -1411,7 +1508,7 @@
     }
 
     context.fillStyle = colors.muted;
-    context.font = `400 15px ${FONT_FAMILY}`;
+    context.font = `400 15px ${fontFamily()}`;
     context.textAlign = "right";
     context.fillText("···", block.x + block.width - 13, top + 2);
     context.textAlign = "left";
@@ -1429,7 +1526,7 @@
     ];
     // Timeline actions span the body column, ending with share at its right edge.
     const step = detail ? width / 6 : (width - 18.75) / (entries.length - 1);
-    context.font = `400 13px ${FONT_FAMILY}`;
+    context.font = `400 13px ${fontFamily()}`;
     // Center the digits' ink box on the icon's center instead of top-aligning.
     const ICON_SIZE = 18.75;
     const iconCenterY = y - 1 + ICON_SIZE / 2;
@@ -1477,9 +1574,9 @@
 
   function fitsDateRow(context, dateText, label) {
     context.save();
-    context.font = `400 15px ${FONT_FAMILY}`;
+    context.font = `400 15px ${fontFamily()}`;
     const dateWidth = context.measureText(dateText || "").width;
-    context.font = `400 12px ${FONT_FAMILY}`;
+    context.font = `400 12px ${fontFamily()}`;
     const labelWidth = context.measureText(label).width;
     context.restore();
     return dateWidth + labelWidth + 24 <= CARD_WIDTH - CARD_PADDING * 2;
@@ -1491,7 +1588,7 @@
     context.textBaseline = "top";
     context.fillStyle = colors.muted;
     context.globalAlpha = 0.78;
-    context.font = `400 12px ${FONT_FAMILY}`;
+    context.font = `400 12px ${fontFamily()}`;
     context.fillText(label, CARD_WIDTH - CARD_PADDING, Math.max(y, 0));
     context.restore();
   }
@@ -1546,7 +1643,7 @@
   }
 
   function layoutQuote(context, quote, width, images, filled = false) {
-    context.font = `400 15px ${FONT_FAMILY}`;
+    context.font = `400 15px ${fontFamily()}`;
     const innerWidth = width - 26;
     const lines = wrapText(context, quote.text, innerWidth).slice(0, 6);
     const hasImage = Boolean(quote.image);
@@ -1713,7 +1810,41 @@
     }
     startMenuWatcher();
     registerMessageBridge();
+    watchSettings();
     watchPageLocale();
+  }
+
+  // The popup and the overlay edit the same synced settings; pick up changes
+  // made elsewhere without re-rendering for our own writes.
+  function watchSettings() {
+    try {
+      chrome.storage.onChanged.addListener((changes, area) => {
+        if (area !== "sync") return;
+        let touched = false;
+        for (const key of Object.keys(DEFAULT_SETTINGS)) {
+          const change = changes[key];
+          if (!change) continue;
+          const incoming = JSON.stringify(change.newValue);
+          // Skip echoes of this tab's writes, and anything arriving while a
+          // newer local write is still queued.
+          if (pendingWrites.has(key)) {
+            if (incoming === pendingWrites.get(key) && !writeTimers.has(key)) {
+              pendingWrites.delete(key);
+            }
+            continue;
+          }
+          if (incoming === JSON.stringify(settings[key])) continue;
+          settings[key] = change.newValue;
+          touched = true;
+        }
+        if (!touched) return;
+        updateThemeControls();
+        updateFontControls();
+        if (overlay?.classList.contains("xshare-open")) renderCurrent();
+      });
+    } catch {
+      // Orphaned content script after an extension reload.
+    }
   }
 
   // Remember X's language so the toolbar popup can match it.
@@ -2063,6 +2194,127 @@
     .xshare-switch-row input:focus-visible + i {
       outline: 2px solid var(--xs-blue);
       outline-offset: 2px;
+    }
+    /* Copy on top, the font box on its own full-width line below. */
+    .xshare-font-row {
+      border-bottom: 1px solid var(--xs-line);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 13px 2px;
+    }
+    .xshare-font-row > span {
+      display: flex;
+      flex: 1;
+      flex-direction: column;
+      gap: 3px;
+      min-width: 0;
+    }
+    .xshare-font-row strong {
+      font-size: 15px;
+      font-weight: 700;
+    }
+    .xshare-font-row small {
+      color: var(--xs-muted);
+      font-size: 13px;
+    }
+    .xshare-font-field {
+      min-width: 0;
+      width: 100%;
+    }
+    .xshare-combo {
+      position: relative;
+    }
+    #xshare-overlay-root .xshare-combo__input {
+      background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%2371767b'%3E%3Cpath d='M12 15.5 6.5 10l1.41-1.41L12 12.67l4.09-4.08L17.5 10Z'/%3E%3C/svg%3E") no-repeat right 8px center / 16px;
+      border: 1px solid var(--xs-line);
+      border-radius: 9999px;
+      box-sizing: border-box;
+      color: var(--xs-text);
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 13px;
+      margin: 0;
+      outline: none;
+      overflow: hidden;
+      padding: 7px 28px 7px 12px;
+      text-overflow: ellipsis;
+      width: 100%;
+    }
+    #xshare-overlay-root .xshare-combo__input:hover {
+      background-color: var(--xs-hover);
+    }
+    #xshare-overlay-root .xshare-combo.is-open .xshare-combo__input,
+    #xshare-overlay-root .xshare-combo__input:focus-visible {
+      border-color: var(--xs-blue);
+      cursor: text;
+    }
+    .xshare-combo__list {
+      background: var(--xs-panel);
+      border: 1px solid var(--xs-line);
+      border-radius: 12px;
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+      box-sizing: border-box;
+      list-style: none;
+      margin: 6px 0 0;
+      max-height: 260px;
+      min-width: 220px;
+      overflow-y: auto;
+      padding: 4px;
+      position: absolute;
+      right: 0;
+      top: 100%;
+      width: 100%;
+      z-index: 3;
+    }
+    .xshare-combo__list[hidden] {
+      display: none;
+    }
+    .xshare-combo__option,
+    .xshare-combo__empty {
+      border-radius: 8px;
+      color: var(--xs-text);
+      font-size: 14px;
+      overflow: hidden;
+      padding: 7px 10px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .xshare-combo__option {
+      align-items: center;
+      cursor: pointer;
+      display: flex;
+      gap: 8px;
+    }
+    .xshare-combo__label {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .xshare-combo__order {
+      background: var(--xs-blue);
+      border-radius: 9999px;
+      color: #fff;
+      flex: 0 0 auto;
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 18px;
+      min-width: 18px;
+      padding: 0 5px;
+      text-align: center;
+    }
+    .xshare-combo__empty {
+      color: var(--xs-muted);
+    }
+    .xshare-combo__option:hover,
+    .xshare-combo__option.is-active {
+      background: var(--xs-hover);
+    }
+    .xshare-combo__option[aria-selected="true"] {
+      color: var(--xs-blue);
+      font-weight: 700;
     }
     .xshare-divider {
       background: var(--xs-line);
