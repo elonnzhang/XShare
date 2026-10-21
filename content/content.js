@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const CONTENT_VERSION = "1.4.1";
+  const CONTENT_VERSION = "1.5.0";
   if (window.__xshareLoaded === CONTENT_VERSION) return;
   window.__xshareLoaded = CONTENT_VERSION;
 
@@ -10,7 +10,9 @@
     watermark: true,
     showMetrics: true,
     // Font names in fallback order; X's own stack always comes last.
-    fontFamily: []
+    fontFamily: [],
+    // Export width in CSS pixels; the PNG is this times the 2x scale.
+    cardWidth: 598
   };
   const ROOT_ID = "xshare-overlay-root";
   const I18N = globalThis.XShareI18n;
@@ -35,7 +37,18 @@
   const SHARE_MENU_RE =
     /send via chat|copy link|share post via|通过聊天发送|复制链接|分享帖子|透過聊天傳送|複製連結|リンクをコピー|링크 복사|Copiar enlace|Copier le lien|Link kopieren|Copiar link|Копировать ссылку/i;
   const VIEWS_RE = /浏览量|觀看次數|views?|表示|조회수|visualizaciones|vues|Aufrufe|visualizações|просмотр/i;
-  const CARD_WIDTH = 598;
+  const DEFAULT_CARD_WIDTH = 598;
+  // Widths offered in the dialog; a value from storage is clamped too.
+  const MIN_CARD_WIDTH = 400;
+  const MAX_CARD_WIDTH = 900;
+  const WIDTH_PRESETS = [480, 598, 720, 900];
+
+  function cardWidth(settings) {
+    const value = Number(settings?.cardWidth);
+    if (!Number.isFinite(value)) return DEFAULT_CARD_WIDTH;
+    return Math.min(MAX_CARD_WIDTH, Math.max(MIN_CARD_WIDTH, Math.round(value)));
+  }
+
   const CARD_PADDING = 16;
   const AVATAR_SIZE = 40;
   const AVATAR_GAP = 4;
@@ -844,6 +857,17 @@
               <input type="checkbox" data-xshare-setting="showMetrics" />
               <i aria-hidden="true"></i>
             </label>
+            <div class="xshare-width-row">
+              <span>
+                <strong>${h("cardWidth")}</strong>
+                <small>${h("cardWidthHint")}</small>
+              </span>
+              <div class="xshare-width-controls">
+                <input type="range" min="${MIN_CARD_WIDTH}" max="${MAX_CARD_WIDTH}" step="10"
+                  data-xshare-width aria-label="${h("cardWidth")}" />
+                <output data-xshare-width-value></output>
+              </div>
+            </div>
             <div class="xshare-font-row">
               <span>
                 <strong>${h("font")}</strong>
@@ -907,6 +931,12 @@
   }
 
   function handleOverlayChange(event) {
+    if (event.target.matches("[data-xshare-width]")) {
+      setSetting("cardWidth", Number(event.target.value));
+      paintWidthControls();
+      renderCurrent();
+      return;
+    }
     const key = event.target.dataset.xshareSetting;
     if (!key) return;
     setSetting(key, event.target.checked);
@@ -960,6 +990,14 @@
 
   // Load the installed font names once per page; the saved font stays
   // selectable even before the list arrives.
+  function paintWidthControls() {
+    const width = cardWidth(settings);
+    const input = overlay?.querySelector("[data-xshare-width]");
+    const output = overlay?.querySelector("[data-xshare-width-value]");
+    if (input) input.value = String(width);
+    if (output) output.textContent = `${width} px`;
+  }
+
   async function updateFontControls() {
     if (!fontCombo) return;
     const combo = fontCombo;
@@ -1002,6 +1040,7 @@
     overlay.querySelector("[data-xshare-size]").textContent = t("sizePending");
     updateThemeControls();
     updateFontControls();
+    paintWidthControls();
     overlay.dataset.xsTheme = detectPageTheme();
     overlay.classList.add("xshare-open");
     lockPageScroll(scroll);
@@ -1163,18 +1202,19 @@
 
     const images = await loadPostImages(post);
     const isDetail = post.mode === "detail";
+    const cardWidthPx = cardWidth(currentSettings);
     const bodyLeft = isDetail ? CARD_PADDING : CONTENT_LEFT;
-    const contentWidth = CARD_WIDTH - CARD_PADDING - bodyLeft;
-    const nameRow = layoutNameRow(context, post, CARD_WIDTH - CARD_PADDING - CONTENT_LEFT, isDetail);
+    const contentWidth = cardWidthPx - CARD_PADDING - bodyLeft;
+    const nameRow = layoutNameRow(context, post, cardWidthPx - CARD_PADDING - CONTENT_LEFT, isDetail);
     context.font = `400 17px ${fontFamily()}`;
     const textLines = wrapText(context, post.text || t("noText"), contentWidth);
 
     const textTop = isDetail ? 66 : 38;
     const textHeight = textLines.length * 24;
     const mediaBlocks = layoutMedia(images, contentWidth);
-    const quoteWidth = isDetail ? CARD_WIDTH - CARD_PADDING * 2 : contentWidth;
+    const quoteWidth = isDetail ? cardWidthPx - CARD_PADDING * 2 : contentWidth;
     const quoteBlock = post.quoted
-      ? layoutQuote(context, post.quoted, quoteWidth, images, !isDetail)
+      ? layoutQuote(context, post.quoted, quoteWidth, images, !isDetail, cardWidthPx)
       : null;
 
     let contentBottom = textTop + textHeight;
@@ -1190,7 +1230,7 @@
     // The signature always sits right-aligned above the metrics row. Detail
     // cards share the timestamp row when both fit, otherwise it wraps below.
     const signatureOnDateRow =
-      isDetail && Boolean(signatureLabel) && fitsDateRow(context, post.displayDate, signatureLabel);
+      isDetail && Boolean(signatureLabel) && fitsDateRow(context, post.displayDate, signatureLabel, cardWidthPx);
     let signatureTop = 0;
     let metricsTop;
     if (isDetail) {
@@ -1204,13 +1244,13 @@
     const MIN_CARD_HEIGHT = isDetail ? metricsTop + 42 : 126;
     const cardHeight = Math.max(MIN_CARD_HEIGHT, metricsTop + footerHeight);
 
-    canvas.width = CARD_WIDTH * scale;
+    canvas.width = cardWidthPx * scale;
     canvas.height = cardHeight * scale;
     context.scale(scale, scale);
     context.textBaseline = "top";
 
     context.fillStyle = colors.surface;
-    context.fillRect(0, 0, CARD_WIDTH, cardHeight);
+    context.fillRect(0, 0, cardWidthPx, cardHeight);
 
     paintAvatar(context, images.avatar, post, colors);
     paintAuthor(context, nameRow, colors);
@@ -1259,14 +1299,14 @@
         // Timeline actions start at the body column; detail spans the card.
         isDetail ? CARD_PADDING : CONTENT_LEFT,
         isDetail ? metricsTop + 22 : metricsTop + 10,
-        isDetail ? CARD_WIDTH - CARD_PADDING * 2 : contentWidth,
+        isDetail ? cardWidthPx - CARD_PADDING * 2 : contentWidth,
         currentSettings.watermark,
         isDetail
       );
     }
 
     if (signatureLabel) {
-      paintSignature(context, signatureLabel, colors, signatureTop);
+      paintSignature(context, signatureLabel, colors, signatureTop, cardWidthPx);
     }
 
     const [dataUrl, blob] = await Promise.all([
@@ -1387,7 +1427,7 @@
     context.globalAlpha = 0.92;
     context.font = `400 15px ${fontFamily()}`;
     context.textAlign = "right";
-    context.fillText("···", CARD_WIDTH - CARD_PADDING - 1, 10);
+    context.fillText("···", cardWidthPx - CARD_PADDING - 1, 10);
     context.restore();
   }
 
@@ -1616,24 +1656,24 @@
     return `Post on 𝕏 · XShare · ${shareTime}`;
   }
 
-  function fitsDateRow(context, dateText, label) {
+  function fitsDateRow(context, dateText, label, cardWidthPx) {
     context.save();
     context.font = `400 15px ${fontFamily()}`;
     const dateWidth = context.measureText(dateText || "").width;
     context.font = `400 12px ${fontFamily()}`;
     const labelWidth = context.measureText(label).width;
     context.restore();
-    return dateWidth + labelWidth + 24 <= CARD_WIDTH - CARD_PADDING * 2;
+    return dateWidth + labelWidth + 24 <= cardWidthPx - CARD_PADDING * 2;
   }
 
-  function paintSignature(context, label, colors, y) {
+  function paintSignature(context, label, colors, y, cardWidthPx) {
     context.save();
     context.textAlign = "right";
     context.textBaseline = "top";
     context.fillStyle = colors.muted;
     context.globalAlpha = 0.78;
     context.font = `400 12px ${fontFamily()}`;
-    context.fillText(label, CARD_WIDTH - CARD_PADDING, Math.max(y, 0));
+    context.fillText(label, cardWidthPx - CARD_PADDING, Math.max(y, 0));
     context.restore();
   }
 
@@ -1884,6 +1924,7 @@
         if (!touched) return;
         updateThemeControls();
         updateFontControls();
+        paintWidthControls();
         if (overlay?.classList.contains("xshare-open")) renderCurrent();
       });
     } catch {
@@ -2241,6 +2282,44 @@
     .xshare-switch-row input:focus-visible + i {
       outline: 2px solid var(--xs-blue);
       outline-offset: 2px;
+    }
+    .xshare-width-row {
+      border-bottom: 1px solid var(--xs-line);
+      padding: 13px 2px;
+    }
+    .xshare-width-row > span {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .xshare-width-row strong {
+      font-size: 15px;
+      font-weight: 700;
+    }
+    .xshare-width-row small {
+      color: var(--xs-muted);
+      font-size: 13px;
+    }
+    .xshare-width-controls {
+      align-items: center;
+      display: flex;
+      gap: 10px;
+      margin-top: 10px;
+    }
+    #xshare-overlay-root .xshare-width-controls input[type="range"] {
+      accent-color: var(--xs-blue);
+      cursor: pointer;
+      flex: 1;
+      margin: 0;
+      min-width: 0;
+    }
+    .xshare-width-controls output {
+      color: var(--xs-muted);
+      flex: 0 0 auto;
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+      min-width: 44px;
+      text-align: right;
     }
     /* Copy on top, the font box on its own full-width line below. */
     .xshare-font-row {

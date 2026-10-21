@@ -3,7 +3,8 @@ const DEFAULTS = {
   watermark: true,
   showMetrics: true,
   // Font names in fallback order; X's own stack always comes last.
-  fontFamily: []
+  fontFamily: [],
+  cardWidth: 598
 };
 const I18N = globalThis.XShareI18n;
 
